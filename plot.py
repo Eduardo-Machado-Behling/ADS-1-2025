@@ -58,8 +58,8 @@ def plot_lines(df: pd.DataFrame, name: str) -> None:
         legend = ax.get_legend()
         legend.set_title("Algoritmo")
 
-        ax.set_xlabel("Bin Size ($2^n$)")
-        ax.set_ylabel(f"{y.replace('_', ' ').title()} (log scale)")
+        ax.set_xlabel("Tamanho da Entrada")
+        ax.set_ylabel(f"{y.replace('_', ' ').title()[:-3]} (ms)")
 
 
     fig.tight_layout()
