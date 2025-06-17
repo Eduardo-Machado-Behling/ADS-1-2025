@@ -1,102 +1,180 @@
 #!/bin/bash
 
-# This script first compiles object files for a matrix of different
-# thread and load settings, then benchmarks each one, appending
-# the results to a single CSV file.
+# ==============================================================================
+#
+#                    Matrix Benchmark & Compilation Script
+#
+# Description:
+#   This script automates the process of performance benchmarking for a C/C++
+#   project across a matrix of different configurations. It has two phases:
+#
+#   1. Compilation Phase: It compiles a source file multiple times, each time
+#      with a different set of preprocessor definitions (e.g., for thread
+#      count and workload size), creating a unique object file for each variant.
+#
+#   2. Benchmarking Phase: It iterates through each compiled object file, links
+#      it against a Google Benchmark harness, runs the benchmark, and processes
+#      the output, appending the results and configuration parameters to a
+#      single, clean CSV file.
+#
+# ==============================================================================
 
-# --- Configuration ---
-# LOAD_VALUES=(256 1024 4096)
-LOAD_VALUES=(256 1024 4096)
-THREAD_VALUES=(1 2 4 8)
+# --- Script Configuration & Safety ---
 
+# Exit immediately if a command fails.
+set -e
+# Exit if any command in a pipeline fails, not just the last one. Crucial for the `sed | awk` pipe.
+set -o pipefail
+
+# --- Default Parameters ---
+
+# These can be overridden with command-line flags (see usage function).
+DEFAULT_LOADS="256,1024,4096"
+DEFAULT_THREADS="1,2,4,8"
+DEFAULT_SAMPLE_SIZE=32
+DEFAULT_GAP=10
+DEFAULT_BEGIN=16
+
+# Default file paths
 OBJECT_DIR="./lib"
 DATA_DIR="./data"
-CSV_FILE="${DATA_DIR}/threads.csv"
+OUTPUT_CSV="${DATA_DIR}/threads_benchmark.csv"
+BENCH_HARNESS_SRC="./benchmark/threads.cpp"
+MAIN_LOGIC_SRC="./src/23201209.c"
 
-BENCH_SRC="./benchmark/threads.cpp"
-MAIN_SRC="./src/23201209.c"
+# Compiler flags
+CFLAGS="-Wall -Wextra -O3 -fPIC"
+CXXFLAGS="-O3"
+LDFLAGS="-lpthread -lbenchmark"
 
+# --- Functions ---
 
-# --- Phase 1: Compile all object file variations ---
+#
+# Prints usage information and exits.
+#
+function usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo
+    echo "Compiles and benchmarks a C source file across a matrix of THREAD and LOAD values."
+    echo
+    echo "Options:"
+    echo "  -l <list>   Comma-separated list of LOAD values (default: \"${DEFAULT_LOADS}\")"
+    echo "  -t <list>   Comma-separated list of THREAD values (default: \"${DEFAULT_THREADS}\")"
+    echo "  -s <num>    Sample size for the benchmark (passed as -DSAMPLE) (default: ${DEFAULT_SAMPLE_SIZE})"
+    echo "  -g <num>    Gap value for the benchmark (passed as -DGAP) (default: ${DEFAULT_GAP})"
+    echo "  -b <num>    Begin value for the benchmark (passed as -DBEGIN) (default: ${DEFAULT_BEGIN})"
+    echo "  -o <file>   Output CSV file path (default: ${OUTPUT_CSV})"
+    echo "  -h          Display this help message"
+    echo
+    exit 1
+}
 
-# Ensure the directories we need exist
-mkdir -p "$OBJECT_DIR" "$DATA_DIR"
+#
+# Cleans up temporary files. Designed to be called on script exit.
+#
+function cleanup() {
+    echo "--- Cleaning up temporary files ---"
+    rm -f thread_bench "${DATA_DIR}/temp.csv" "${BENCH_HARNESS_SRC%.cpp}.o"
+}
 
-# This is our list ($o in your pseudo-code), a Bash array.
-object_files=()
+# --- Argument Parsing ---
 
-echo "==> Compiling object files for different loads and thread counts..."
+# Set parameters from defaults
+LOAD_STR=$DEFAULT_LOADS
+THREAD_STR=$DEFAULT_THREADS
+SAMPLE_SIZE=$DEFAULT_SAMPLE_SIZE
+GAP=$DEFAULT_GAP
+BEGIN_VAL=$DEFAULT_BEGIN
 
-for l in "${LOAD_VALUES[@]}"; do
-  for t in "${THREAD_VALUES[@]}"; do
-    # Define a clear output filename for the object file
-    output_file="${OBJECT_DIR}/parallel_${l}_${t}.o"
-
-    echo "  -> Compiling for LOAD=$l, THREADS=$t"
-
-    # Compile the source into an object file with the specific preprocessor defines.
-    # Note: The stray 'ordena' from your pseudo-code was removed as it's not valid gcc syntax here.
-    gcc -Wall -Wextra -O3 -c "$MAIN_SRC" \
-        -DSTRIP_MAIN \
-        -DTHREAD_MIN_LOAD="$l" \
-        -DTHREAD_AMOUNT="$t" \
-        -o "$output_file"
-
-    # Add the newly created object file path to our list
-    object_files+=("$output_file")
-  done
+while getopts "l:t:s:g:b:o:h" opt; do
+    case ${opt} in
+        l) LOAD_STR=$OPTARG ;;
+        t) THREAD_STR=$OPTARG ;;
+        s) SAMPLE_SIZE=$OPTARG ;;
+        g) GAP=$OPTARG ;;
+        b) BEGIN_VAL=$OPTARG ;;
+        o) OUTPUT_CSV=$OPTARG ;;
+        h) usage ;;
+        \?) echo "Invalid Option: -$OPTARG" >&2; usage ;;
+    esac
 done
 
-echo "==> Compilation finished."
-echo
+# Convert comma-separated strings into Bash arrays
+IFS=',' read -ra LOAD_VALUES <<< "$LOAD_STR"
+IFS=',' read -ra THREAD_VALUES <<< "$THREAD_STR"
 
-# --- Phase 2: Benchmark each object file ---
+# --- Main Logic ---
 
-# Write the header to the final CSV file, including our new columns
-echo "name,iterations,real_time,cpu_time,time_unit,bytes_per_second,items_per_second ,label,error_occurred,error_message,threads,load" > "$CSV_FILE"
+function main() {
+    # Trap ensures the 'cleanup' function is called when the script exits,
+    # for any reason (success, error, or Ctrl+C).
+    trap cleanup EXIT
 
-echo "==> Running benchmarks for each object file..."
+    # --- Setup ---
+    mkdir -p "$OBJECT_DIR" "$DATA_DIR"
+    local object_files=()
 
-# Loop through our list of compiled object files
-for obj_file in "${object_files[@]}"; do
-    #
-    # --- This is the key part: Recovering $l and $t from the filename ---
-    #
-    # Example obj_file: "./lib/parallel_1024_8.o"
-    # 1. Get just the filename: "parallel_1024_8.o"
-    base_name=$(basename "$obj_file")
+    # --- Phase 1: Compile all object file variations ---
+    echo "==> Compiling object file variations..."
+    for l in "${LOAD_VALUES[@]}"; do
+        for t in "${THREAD_VALUES[@]}"; do
+            local output_file="${OBJECT_DIR}/parallel_${l}_${t}.o"
+            echo "  -> Compiling for LOAD=${l}, THREADS=${t}"
 
-    # 2. Remove the prefix "parallel_" and suffix ".o" to get "1024_8"
-    params_str="${base_name#parallel_}"
-    params_str="${params_str%.o}"
+            gcc ${CFLAGS} -c "${MAIN_LOGIC_SRC}" \
+                -DSTRIP_MAIN \
+                -DTHREAD_MIN_LOAD="${l}" \
+                -DTHREAD_AMOUNT="${t}" \
+                -o "${output_file}"
 
-    # 3. Extract the parts before and after the underscore '_'
-    load_val="${params_str%_*}"   # Result: 1024
-    thread_val="${params_str#*_}"  # Result: 8
+            object_files+=("${output_file}")
+        done
+    done
+    echo "==> Compilation of variations finished."
+    echo
 
-    echo "  -> Benchmarking ${base_name} (LOAD=${load_val}, THREADS=${thread_val})"
+    # --- Phase 2: Benchmark each object file ---
 
-    # Link the benchmark runner with the current object file.
-    # Added -lpthread which is often required for C++ threading.
-    g++ "$BENCH_SRC" "$obj_file" -O3 -lpthread -lbenchmark -o thread_bench -DSAMPLE=$1 -DGAP=$2 -DBEGIN=$3
+    # **EFFICIENCY GAIN**: Compile the benchmark harness only ONCE.
+    echo "==> Compiling the main benchmark harness..."
+    local bench_obj="${BENCH_HARNESS_SRC%.cpp}.o"
+    g++ ${CXXFLAGS} -c "${BENCH_HARNESS_SRC}" -o "${bench_obj}" \
+            -DSAMPLE=${SAMPLE_SIZE} \
+            -DGAP=${GAP} \
+            -DBEGIN=${BEGIN_VAL} \
 
-    # Run the benchmark, saving the raw output to a temporary file
-    ./thread_bench --benchmark_out="${DATA_DIR}/temp.csv" --benchmark_out_format=csv
+    # Prepare the final results file
+    echo "name,iterations,real_time,cpu_time,time_unit,bytes_per_second,items_per_second,label,error_occurred,error_message,threads,load" > "${OUTPUT_CSV}"
+    echo "==> Running benchmarks for each object file..."
 
-    # Process the temp file and append it to our main CSV.
-    # We use the recovered load_val and thread_val here.
-    sed '1,/name,iterations/d' "${DATA_DIR}/temp.csv" | \
-    awk -F, -v threads="$thread_val" -v l="$load_val" '
-        BEGIN {OFS=","}
-        {
-            # For each line from sed, append the recovered values and print
-            print $0, threads, l
-        }
-    ' >> "$CSV_FILE"
-done
+    for obj_file in "${object_files[@]}"; do
+        # Recover parameters from the object filename
+        local base_name=$(basename "${obj_file}")
+        local params_str="${base_name#parallel_}"
+        params_str="${params_str%.o}"
+        local load_val="${params_str%_*}"
+        local thread_val="${params_str#*_}"
 
-echo
-echo "==> Benchmarking complete. Results are in ${CSV_FILE}"
+        echo "  -> Benchmarking ${base_name}"
 
-# Clean up temporary files
-rm -f thread_bench "${DATA_DIR}/temp.csv"
+        g++ "${bench_obj}" "${obj_file}" ${CXXFLAGS} ${LDFLAGS} \
+            -o thread_bench
+
+        # Run the benchmark, redirecting its CSV output to a temporary file
+        ./thread_bench --benchmark_out="${DATA_DIR}/temp.csv" --benchmark_out_format=csv
+
+        # Process the temp file with awk to add the 'threads' and 'load' columns,
+        # skipping the header line produced by the benchmark tool.
+        # Append the processed result to our main CSV.
+        awk -F, -v threads="${thread_val}" -v l="${load_val}" '
+            BEGIN { OFS="," }
+            NR > 1 { print $0, threads, l }
+        ' "${DATA_DIR}/temp.csv" >> "${OUTPUT_CSV}"
+    done
+
+    echo
+    echo "==> Benchmarking complete. Results are in ${OUTPUT_CSV}"
+}
+
+# Run the main function
+main
