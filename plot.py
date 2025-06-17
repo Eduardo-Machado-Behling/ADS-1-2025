@@ -229,7 +229,7 @@ def plot_threads(root: str, name: str) -> None:
     thread_boxplot(df, name)
 
 
-def plot_compares(root: str, name: str) -> None:
+def plot_compares(root: str, name: str) -> pd.DataFrame:
     with open(os.path.join(root, name)) as csv:
         data = ''.join(filter(lambda s: re.search(r"^(\S+,)+.*\n$", s), csv.readlines()))
     
@@ -245,19 +245,74 @@ def plot_compares(root: str, name: str) -> None:
     bench_shapes(fdf, name)
     print(f"\thist")
     histogram(fdf, name)
+    return fdf
 
+def plot_data(root: str, name: str, fdf: pd.DataFrame, fdf_name: str) -> None:
+    data = pd.read_csv(os.path.join(root, name))
+
+    data['bin_size'] = data['size'].apply(lambda x: int(np.log2(x))).astype(int)
+    data['real_time_ms'] = data['real_time'] / 1e6
+
+    fig, axes = plt.subplots(1, 2, figsize=(24, 8))
+
+    df = fdf[fdf['name'] == 'ParallelMergeSort (Original)']
+    df['cpu_time_ms'] = df['cpu_time'] / 1_000_000
+    df['real_time_ms'] = df['real_time'] / 1_000_000
+
+    sns.lineplot(data=data, x='bin_size', y='real_time_ms', hue='arq', ax=axes[0])
+    axes[0].set_title("Comparação com resultados usando a mesuração autoral:")
+    axes[0].set_ylabel("Tempo de Execução (ms)")
+    axes[0].set_xlabel("Tamanho do Vetor")
+    axes[0].set_yscale("log")
+    axes[0].xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f'$2^{{{int(x)}}}$'))
+    axes[0].xaxis.set_minor_locator(ticker.MultipleLocator(1))
+    axes[0].grid(True)
+    axes[0].grid(True, which='minor', linestyle='--')
+
+    d = data.groupby(['arq', 'bin_size'])['real_time_ms'].mean().reset_index().query('arq==23201209')
+    fdf['real_time_ms'] = fdf['real_time'] / 1e6
+    d1 = fdf.query("name=='ParallelMergeSort (Original)'").groupby(['bin_size'])['real_time_ms'].mean().reset_index()
+
+    merged_df = pd.merge(d, d1, on='bin_size', how='left')
+
+    merged_df = merged_df.rename(columns={'real_time_ms': 'bench'})
+
+    merged_df['error'] = merged_df['bench'] - merged_df['real_time_ms']
+    merged_df['error_cv'] = merged_df['error'] / merged_df['bench']
+
+    sns.lineplot(data=merged_df, x='bin_size', y='error_cv', ax=axes[1])
+    axes[1].set_title("Diferença Entre a mêdia Mesuração Autoral (32 Amostras) e a Mesuração Gbenchmark (200 Amostras):")
+    axes[1].set_ylabel(r"Diferença sobre a mêdia gbench ($\frac{\bar{x}_{gbench}-\bar{x}_{autoral}}{\bar{x}_{gbench}}$)")
+    axes[1].set_xlabel("Tamanho do Vetor")
+    axes[1].set_xticks(sorted(d['bin_size'].unique())[::2])
+    axes[1].xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f'$2^{{{int(x)}}}$'))
+    axes[1].xaxis.set_minor_locator(ticker.MultipleLocator(1))
+    axes[1].grid(True)
+    axes[1].grid(True, which='minor', linestyle='--')
+    fig.tight_layout()
+    path = os.path.join(OUT_ROOT, name)
+    os.makedirs(path, exist_ok=True)
+    h = fdf_name
+    for ext in PLOT_EXTS:
+        fig.savefig(os.path.join(path, f'comp_{h}.{ext}'), dpi=300)
 
 
 
 
 def main() -> None:
     for root, _, files in os.walk(DATA_ROOT):
-        for csv in filter(lambda x: x.endswith('.csv'), files):
+        dfs = []
+        for csv in sorted(filter(lambda x: x.endswith('.csv'), files), key=lambda x: -1 if x != 'data.csv' else 1):
             try:
                 if re.search(r"^T?\d+_L?\d+_S?\d+_G?\d+\.csv$", csv):
-                    plot_compares(root, csv)
+                    dfs.append((plot_compares(root, csv), csv))
                 elif csv == 'threads.csv':
                     plot_threads(root, csv)
+                elif csv == 'data.csv':
+                    print("data plotting:")
+                    for i, (df, ndf) in enumerate(dfs):
+                        print(f"\tdf #{i + 1}/{len(dfs)}")
+                        plot_data(root, csv, df, ndf)
             except KeyboardInterrupt:
                 continue
 
