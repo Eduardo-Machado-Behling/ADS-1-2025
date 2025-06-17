@@ -6,7 +6,7 @@ out='./data/data.csv'
 shift 3
 
 make
-echo "arq,real_time,size" > $out
+echo "arq,size,real_time" > $out
 for exe in "$@"; do 
 	s=$((2**$sp))
 	while [ $s -le $e ]; do
