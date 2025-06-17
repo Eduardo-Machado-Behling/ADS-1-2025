@@ -32,7 +32,7 @@ int main(int argc, char *argv[]) {
   auto duracao =
       std::chrono::duration_cast<std::chrono::nanoseconds>(fim - inicio);
 
-  std::cout << "1313, " << numElementos << ", " << duracao.count() << std::endl;
+  std::cout << "1313, " << numElementos << ", " << duracao.count() /1e6 << std::endl;
 
   return 0;
 }

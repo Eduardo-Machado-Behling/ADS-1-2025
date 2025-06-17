@@ -2,6 +2,7 @@
 CC = gcc
 CXX = g++
 CFLAGS = -Wall -Wextra -O3
+CXXFLAGS = -Wall -Wextra -O3
 LDFLAGS = 
 THREADS ?= 4
 TLOAD   ?= 1024
@@ -65,6 +66,7 @@ run: all
 clean:
 	@echo "==> Cleaning up build files..."
 	rm -f $(EXECUTAVEL)
+	rm -f $(EXECUTAVEL)_1313
 	rm -rf $(ODIR)
 	@echo "==> Cleanup complete."
 

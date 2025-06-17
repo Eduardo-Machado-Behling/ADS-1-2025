@@ -29,7 +29,7 @@ set -e
 START_POWER=10      # The starting size will be 2^START_POWER
 END_POWER=20        # The final size will be 2^END_POWER
 REPETITIONS=5       # Number of times to run each executable for each size
-OUTPUT_FILE="./data/benchmark_data.csv" # Default output file path
+OUTPUT_FILE="./data/data.csv" # Default output file path
 
 # --- Functions ---
 
