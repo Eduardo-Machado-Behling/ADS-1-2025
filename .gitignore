@@ -1,0 +1,6 @@
+*.o
+ordena*
+.vscode
+bench_sorts
+.venv
+thread_bench
