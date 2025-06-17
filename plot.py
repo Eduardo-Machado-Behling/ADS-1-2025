@@ -16,34 +16,43 @@ OUT_ROOT = os.path.join(os.getcwd(), "plots")
 PLOT_EXTS = ['pdf', 'png', 'jpeg']
 
 def histogram(df: pd.DataFrame, algo: str) -> None:
-    def plot(df: pd.DataFrame, algo: str) -> None:
+    def plot(df: pd.DataFrame, algo: str):
       fig, axes = plt.subplots(4, 4, figsize=(24, 24))
 
       d = df.query('bin_size > 8')
 
       for ax, size in zip(axes.flatten(), sorted(d['bin_size'].unique())):
         dd = d[(d['name'] == algo) & (d['bin_size'] == size)]
-        sns.histplot(data=dd, x='cpu_time', ax=ax)
-        ax.set_title(f'tamanho = {2**size} | Sample = {dd.shape[0]}')
+        sns.histplot(data=dd, x='real_time_ms', ax=ax)
+        ax.set_title(f'tamanho = $2^{{{size}}}$ [{dd.shape[0]} Amostras]')
+        ax.set_xlabel('Tempo de Execução (ms)')
+        ax.set_ylabel('Frequência')
 
-        for ext in PLOT_EXTS:
-            path = os.path.join(OUT_ROOT, algo)
-            os.makedirs(path, exist_ok=True)
-            fig.savefig(os.path.join(path, f'hist.{ext}'), dpi=300)
+      fig.suptitle(f'Distribuição do Tempo de Execução do algoritmo {algo}', fontsize=32, y=0.99)
+
+      # Adjust layout to prevent titles from overlapping
+      fig.tight_layout(rect=[0, 0.03, 1, 0.97])
+
+      path = os.path.join(OUT_ROOT, algo)
+      os.makedirs(path, exist_ok=True)
+      for ext in PLOT_EXTS:
+          fig.savefig(os.path.join(path, f'hist.{ext}'), dpi=300)
 
     for algo in df['name'].unique():
+        print(f"\t\t{algo}")
         plot(df, algo)
 
 def plot_lines(df: pd.DataFrame, name: str) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(24, 12))
 
-    for ax, y in zip(axes, ['real_time', 'cpu_time']):
+    for ax, y in zip(axes, ['real_time_ms', 'cpu_time_ms']):
         sns.lineplot(data=df, x='bin_size', y=y, hue='name', ax=ax)
         ax.xaxis.set_major_locator(ticker.MultipleLocator(2))
         ax.xaxis.set_minor_locator(ticker.MultipleLocator(1))
         ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x,_: f"$2^{{{int(x)}}}$"))
         ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x,_: f"${x/1e6}$"))
         ax.grid(True)
+        ax.grid(True, which='minor', axis='x', linestyle='--')
         ax.set_yscale('log')
 
         legend = ax.get_legend()
@@ -53,9 +62,10 @@ def plot_lines(df: pd.DataFrame, name: str) -> None:
         ax.set_ylabel(f"{y.replace('_', ' ').title()} (log scale)")
 
 
+    fig.tight_layout()
+    path = os.path.join(OUT_ROOT, name)
+    os.makedirs(path, exist_ok=True)
     for ext in PLOT_EXTS:
-        path = os.path.join(OUT_ROOT, name)
-        os.makedirs(path, exist_ok=True)
         fig.savefig(os.path.join(path, f'lineplot.{ext}'), dpi=300)
 
 def boxplot_bench(df: pd.DataFrame, name: str) -> None:
@@ -70,8 +80,11 @@ def boxplot_bench(df: pd.DataFrame, name: str) -> None:
       dd = df[(df['bin_size'] >= lb )& (df['bin_size'] < ub)]
 
 
+      if dd.empty:
+          continue
+
       dd['bin_size'] = dd['bin_size'].astype(int)
-      sns.boxplot(data=dd, x='bin_size', y='real_time', hue='name', ax=ax)
+      sns.boxplot(data=dd, x='bin_size', y='real_time_ms', hue='name', ax=ax)
 
       current_labels = [label.get_text() for label in ax.get_xticklabels()]
       new_labels = [f"$2^{{{label}}}$" for label in current_labels]
@@ -81,9 +94,91 @@ def boxplot_bench(df: pd.DataFrame, name: str) -> None:
       legend = ax.get_legend()
       legend.set_title("Algoritmo")
 
+    fig.tight_layout()
+    path = os.path.join(OUT_ROOT, name)
+    os.makedirs(path, exist_ok=True)
     for ext in PLOT_EXTS:
-        path = os.path.join(OUT_ROOT, name)
-        os.makedirs(path, exist_ok=True)
+        fig.savefig(os.path.join(path, f'boxplot.{ext}'), dpi=300)
+
+def bench_shapes(df: pd.DataFrame, name: str) -> None:
+    def moment_2(series):
+        return ((series - series.mean())**2).mean()
+
+    def moment_3(series):
+        return ((series - series.mean())**3).mean()
+
+    def moment_4(series):
+        return ((series - series.mean())**4).mean()
+
+    def kurtosis_agg(series):
+        m2 = moment_2(series)
+        m4 = moment_4(series)
+        if m2 == 0:  # Avoid division by zero
+            return np.nan
+        return m4 / (m2**2)
+
+    def coef_assim_agg(series):
+        m2 = moment_2(series)
+        m3 = moment_3(series)
+        if m2 == 0:  # Avoid division by zero
+            return np.nan
+        return m3 / (m2 * np.sqrt(m2))
+
+    aggregated_df = df.groupby(['size', 'name'])['cpu_time'].agg(
+        mean='mean',
+        std='std',
+        min='min',
+        max='max',
+        q25=lambda x: x.quantile(0.25),
+        q50=lambda x: x.quantile(0.50),
+        q75=lambda x: x.quantile(0.75),
+        mode=lambda x: x.mode()[0] if not x.mode().empty else np.nan,
+        kurtosis=kurtosis_agg,
+        coef_assim=coef_assim_agg
+    ).reset_index() # reset_index() to make 'size' a regular column for merging
+
+    def class_kurt(x):
+        labels = ['Platicurtica', 'Leptocurtica', 'Mesocurtica']
+        if x > 3:
+          return labels[0]
+        elif x < -3:
+          return labels[1]
+        else:
+          return labels[2]
+
+    def class_symm(x):
+        labels = ['Assim. Pos.', 'Assim. Neg.', 'Aprox. Sim.']
+        if x > 0.5:
+          return labels[0]
+        elif x < -0.5:
+          return labels[1]
+        else:
+          return labels[2]
+
+    aggregated_df['kurtosis classification'] = aggregated_df['kurtosis'].apply(class_kurt)
+    aggregated_df['symmetry classification'] = aggregated_df['coef_assim'].apply(class_symm)
+    aggregated_df['cv'] = aggregated_df['std'] / aggregated_df['mean']
+    aggregated_df['bin_size'] = aggregated_df['size'].apply(lambda x: int(np.log2(x))).astype(int)
+    aggregated_df['classification'] = aggregated_df['symmetry classification'] + ' &\n' + aggregated_df['kurtosis classification']
+
+    fig, ax = plt.subplots(figsize=(12, 15))
+
+    ax.set_axisbelow(True)
+    aggregated_df.sort_values(by='classification', ascending=False, inplace=True)
+    sns.countplot(data=aggregated_df, x='classification', hue='name', ax=ax)
+    ax.set_xlabel("Classificação")
+    ax.set_ylabel("Quantidade")
+    ax.grid(True, axis='y')
+    ax.grid(True, axis='y', which='minor', linestyle='--')
+    ax.yaxis.set_minor_locator(ticker.MultipleLocator(1))
+    ax.get_legend().set_title('Algoritmo')
+    ax.set_title("Formato da distribuição por Algoritmo")
+
+    fig.tight_layout()
+    path = os.path.join(OUT_ROOT, name)
+    os.makedirs(path, exist_ok=True)
+    aggregated_df.to_csv(os.path.join(path, 'metrics.csv'))
+    for ext in PLOT_EXTS:
         fig.savefig(os.path.join(path, f'boxplot.{ext}'), dpi=300)
 
 def preprocess_bench(df: pd.DataFrame) -> pd.DataFrame:
@@ -105,15 +200,34 @@ def preprocess_bench(df: pd.DataFrame) -> pd.DataFrame:
     fdf['bin_size'] = fdf['size'].apply(lambda x: int(np.log2(x)))
     fdf['repeats'] = fdf['name'].apply(lambda x: x.split('/')[2].split(":")[1]).astype(int)
     fdf['name'] = fdf['name'].apply(lambda x: names[x.split('/')[0]])
+    fdf['cpu_time_ms'] = fdf['cpu_time'] / 1e6
+    fdf['real_time_ms'] = fdf['real_time'] / 1e6
     return fdf
 
 def thread_boxplot(df: pd.DataFrame, name: str):
-    pass
+    fig, ax = plt.subplots(figsize=(6*2, 6*2))
+
+    sns.lineplot(data=df, x='bin_size', y='real_time_ms', hue='threads', ax=ax)
+    ax.set_yscale('log')
+    ax.grid(True, axis='y')
+    ax.grid(True, axis='y', which='minor', linestyle='--')
+    ax.set_ylabel("Tempo de Execução (ms)")
+    ax.set_xlabel("Tamanho da Entrada")
+    ax.get_legend().set_title('Quantidade de Threads')
+
+    fig.tight_layout()
+    path = os.path.join(OUT_ROOT, name)
+    os.makedirs(path, exist_ok=True)
+    for ext in PLOT_EXTS:
+        fig.savefig(os.path.join(path, f'boxplot.{ext}'), dpi=300)
 
 
 def plot_threads(root: str, name: str) -> None:
-    df = pd.read_csv(os.path.join(root, name))
+    df = preprocess_bench(pd.read_csv(os.path.join(root, name)))
     name = name.removesuffix('.csv')
+    print(f"threading: {name}")
+    thread_boxplot(df, name)
+
 
 def plot_compares(root: str, name: str) -> None:
     with open(os.path.join(root, name)) as csv:
@@ -127,6 +241,8 @@ def plot_compares(root: str, name: str) -> None:
     plot_lines(fdf, name)
     print(f"\tboxplot")
     boxplot_bench(fdf, name)
+    print("\tmetrics")
+    bench_shapes(fdf, name)
     print(f"\thist")
     histogram(fdf, name)
 
@@ -137,10 +253,13 @@ def plot_compares(root: str, name: str) -> None:
 def main() -> None:
     for root, _, files in os.walk(DATA_ROOT):
         for csv in filter(lambda x: x.endswith('.csv'), files):
-            if re.search(r"^\d+_\d+_\d+_\d+\.csv$", csv):
-                plot_compares(root, csv)
-            elif csv == 'threads.csv':
-                plot_threads(root, csv)
+            try:
+                if re.search(r"^T?\d+_L?\d+_S?\d+_G?\d+\.csv$", csv):
+                    plot_compares(root, csv)
+                elif csv == 'threads.csv':
+                    plot_threads(root, csv)
+            except KeyboardInterrupt:
+                continue
 
 if __name__ == '__main__':
     main()
